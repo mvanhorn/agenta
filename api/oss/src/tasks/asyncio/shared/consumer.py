@@ -28,12 +28,19 @@ import asyncio
 from typing import Dict, List, Optional, Tuple
 
 from redis.asyncio import Redis
+from redis.exceptions import ConnectionError as RedisConnectionError
+from redis.exceptions import TimeoutError as RedisTimeoutError
 
 from oss.src.tasks.taskiq.shared.broker import stable_consumer_name
 from oss.src.utils import heartbeat
 from oss.src.utils.logging import get_module_logger
 
 log = get_module_logger(__name__)
+
+# A half-open socket raises these. A Postgres or other TimeoutError is a
+# different class and must stay on the generic handler, so a database timeout
+# does not drop the shared Redis pool.
+_REDIS_CONNECTION_FAILURES = (RedisConnectionError, RedisTimeoutError)
 
 # Fields a dead letter carries on top of the original entry's own fields.
 DEAD_LETTER_REASON = b"dead_letter_reason"
@@ -180,6 +187,9 @@ class StreamConsumer:
 
             return batch
 
+        except _REDIS_CONNECTION_FAILURES as e:
+            log.error(f"{self.log_prefix} Failed to read batch: {e}")
+            raise
         except Exception as e:
             log.error(f"{self.log_prefix} Failed to read batch: {e}")
             return []
@@ -230,6 +240,9 @@ class StreamConsumer:
                 # A zero window means "no idle filter", not "idle exactly zero".
                 idle=self.reclaim_min_idle_ms or None,
             )
+        except _REDIS_CONNECTION_FAILURES as e:
+            log.error(f"{self.log_prefix} Failed to read pending entries: {e}")
+            raise
         except Exception as e:
             log.error(f"{self.log_prefix} Failed to read pending entries: {e}")
             return []
@@ -249,6 +262,9 @@ class StreamConsumer:
                 min_idle_time=self.reclaim_min_idle_ms,
                 message_ids=list(deliveries.keys()),
             )
+        except _REDIS_CONNECTION_FAILURES as e:
+            log.error(f"{self.log_prefix} Failed to claim pending entries: {e}")
+            raise
         except Exception as e:
             log.error(f"{self.log_prefix} Failed to claim pending entries: {e}")
             return []
@@ -391,6 +407,9 @@ class StreamConsumer:
                 self.consumer_group,
                 *message_ids,
             )
+        except _REDIS_CONNECTION_FAILURES as e:
+            log.error(f"{self.log_prefix} Failed to ACK/DEL messages: {e}")
+            raise
         except Exception as e:
             log.error(f"{self.log_prefix} Failed to ACK/DEL messages: {e}")
             # Don't raise - messages will remain pending and can be claimed later
@@ -400,6 +419,13 @@ class StreamConsumer:
     ) -> Tuple[int, List[bytes]]:
         """Process one batch. Subclasses implement deserialize/group/meter/write."""
         raise NotImplementedError
+
+    async def drop_connections(self) -> None:
+        # One client is shared by every consumer in this process. Drop the
+        # pool's sockets so the next command checks out a new connection.
+        # Replacing self.redis would leave the other loops on the dead pool.
+        await self.redis.connection_pool.disconnect(inuse_connections=True)
+        await asyncio.sleep(1)
 
     async def run(self):
         """
@@ -444,6 +470,8 @@ class StreamConsumer:
                 if processed_message_ids:
                     await self.ack_and_delete(processed_message_ids)
 
+            except _REDIS_CONNECTION_FAILURES:
+                await self.drop_connections()
             except Exception:
                 log.error(
                     f"{self.log_prefix} Error in worker loop",

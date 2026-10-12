@@ -3,6 +3,8 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 from uuid import UUID
 
 from redis.asyncio import Redis
+from redis.exceptions import ConnectionError as RedisConnectionError
+from redis.exceptions import TimeoutError as RedisTimeoutError
 
 from oss.src.core.events.service import EventsService
 from oss.src.core.events.streaming import deserialize_event
@@ -261,6 +263,8 @@ class EventsWorker(StreamConsumer):
                     batch_size=len(batch),
                     ingested=ingested,
                 )
+            except (RedisConnectionError, RedisTimeoutError):
+                await self.drop_connections()
             except Exception:
                 log.error("[EVENTS] Worker loop error", exc_info=True)
                 await asyncio.sleep(1)

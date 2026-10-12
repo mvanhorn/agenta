@@ -2,6 +2,12 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from entrypoints import worker_streams
+from oss.src.dbs.redis.shared.engine import (
+    STREAMS_HEALTH_CHECK_INTERVAL,
+    STREAMS_SOCKET_CONNECT_TIMEOUT,
+    STREAMS_SOCKET_KEEPALIVE,
+    STREAMS_SOCKET_TIMEOUT,
+)
 
 
 async def test_relay_initialization_failure_does_not_block_durable_consumers():
@@ -27,7 +33,9 @@ async def test_relay_initialization_failure_does_not_block_durable_consumers():
         patch.object(worker_streams, "warn_deprecated_env_vars"),
         patch.object(worker_streams, "validate_required_env_vars"),
         patch.object(worker_streams, "is_ee", return_value=False),
-        patch.object(worker_streams.Redis, "from_url", return_value=AsyncMock()),
+        patch.object(
+            worker_streams.Redis, "from_url", return_value=AsyncMock()
+        ) as from_url,
         patch.object(
             worker_streams,
             "_build_records_worker",
@@ -51,3 +59,13 @@ async def test_relay_initialization_failure_does_not_block_durable_consumers():
     records.run.assert_awaited_once()
     live_relay.create_consumer_group.assert_awaited_once()
     live_relay.run.assert_not_awaited()
+    assert STREAMS_SOCKET_TIMEOUT > 5000 / 1000
+    assert STREAMS_SOCKET_CONNECT_TIMEOUT > 5000 / 1000
+    from_url.assert_called_once_with(
+        worker_streams.env.redis.uri_durable,
+        decode_responses=False,
+        socket_timeout=STREAMS_SOCKET_TIMEOUT,
+        socket_connect_timeout=STREAMS_SOCKET_CONNECT_TIMEOUT,
+        health_check_interval=STREAMS_HEALTH_CHECK_INTERVAL,
+        socket_keepalive=STREAMS_SOCKET_KEEPALIVE,
+    )

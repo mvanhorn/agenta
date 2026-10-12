@@ -82,6 +82,16 @@ class LockEngine:
             self._r = None
 
 
+# Longer than the 5s XREADGROUP block and the 1s session pubsub poll, so a
+# healthy read still returns. Short enough that a half-open socket after
+# failover unblocks the worker. The health check covers connections that sit
+# idle between commands; the socket timeout unblocks a read already parked.
+STREAMS_SOCKET_TIMEOUT = 15
+STREAMS_SOCKET_CONNECT_TIMEOUT = 15
+STREAMS_HEALTH_CHECK_INTERVAL = 30
+STREAMS_SOCKET_KEEPALIVE = True
+
+
 class StreamsEngine:
     """Redis durable — persistent streams for tracing/events."""
 
@@ -96,7 +106,14 @@ class StreamsEngine:
 
             if not env.redis.uri_durable:
                 raise RuntimeError("REDIS_URI_DURABLE is required for streams.")
-            self._redis = Redis.from_url(env.redis.uri_durable, decode_responses=False)
+            self._redis = Redis.from_url(
+                env.redis.uri_durable,
+                decode_responses=False,
+                socket_timeout=STREAMS_SOCKET_TIMEOUT,
+                socket_connect_timeout=STREAMS_SOCKET_CONNECT_TIMEOUT,
+                health_check_interval=STREAMS_HEALTH_CHECK_INTERVAL,
+                socket_keepalive=STREAMS_SOCKET_KEEPALIVE,
+            )
         return self._redis
 
     async def close(self) -> None:

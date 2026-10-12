@@ -58,6 +58,12 @@ from oss.src.dbs.postgres.shared.engine import (
 from oss.src.dbs.postgres.tracing.dao import TracingDAO
 from oss.src.dbs.postgres.webhooks.dao import WebhooksDAO
 from oss.src.dbs.redis.sessions.watch import SessionsWatchPublisher
+from oss.src.dbs.redis.shared.engine import (
+    STREAMS_HEALTH_CHECK_INTERVAL,
+    STREAMS_SOCKET_CONNECT_TIMEOUT,
+    STREAMS_SOCKET_KEEPALIVE,
+    STREAMS_SOCKET_TIMEOUT,
+)
 from oss.src.tasks.asyncio.channels.outbox import (
     ChannelsOutboxStreamWorker,
     ChannelsOutboxWorker,
@@ -270,11 +276,14 @@ async def main_async() -> int:
         if is_ee():
             bootstrap_entitlements_services()
 
-        # socket_timeout=None: XREADGROUP(block=5000ms) would otherwise trip the socket timeout.
+        # Past the 5s block, so a healthy read returns; a dead socket still unblocks.
         redis_client = Redis.from_url(
             env.redis.uri_durable,
             decode_responses=False,
-            socket_timeout=None,
+            socket_timeout=STREAMS_SOCKET_TIMEOUT,
+            socket_connect_timeout=STREAMS_SOCKET_CONNECT_TIMEOUT,
+            health_check_interval=STREAMS_HEALTH_CHECK_INTERVAL,
+            socket_keepalive=STREAMS_SOCKET_KEEPALIVE,
         )
 
         builders = {
